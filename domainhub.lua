@@ -356,16 +356,19 @@ local function FlyTo(targetPos)
     flying = true
     flyTarget = targetPos
     flyPhase = "CLIMB"
+    FLY_ALTITUDE = 300 -- reset per flight
 
-    -- LinearVelocity (modern, smooth)
-    flyLV = Instance.new("LinearVelocity")
+    -- BodyVelocity (compatible with Delta/older executors)
+    flyLV = Instance.new("BodyVelocity")
     flyLV.MaxForce = Vector3.new(9e9, 9e9, 9e9)
-    flyLV.VectorVelocity = Vector3.new(0, 0, 0)
+    flyLV.Velocity = Vector3.new(0, 0, 0)
+    flyLV.P = 9e4
     flyLV.Parent = root
 
     -- BodyGyro to stay upright
     flyBG = Instance.new("BodyGyro")
     flyBG.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+    flyBG.D = 100
     flyBG.CFrame = root.CFrame
     flyBG.Parent = root
 
@@ -377,10 +380,12 @@ local function FlyTo(targetPos)
         end
     end)
 
-    -- Raycast params
+    -- Raycast params (safe for all executors)
     local rayParams = RaycastParams.new()
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
-    rayParams.FilterDescendantsInstances = {char}
+    pcall(function()
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        rayParams.FilterDescendantsInstances = {char}
+    end)
 
     -- Main flight loop
     task.spawn(function()
@@ -416,9 +421,10 @@ local function FlyTo(targetPos)
                 if currentPos.Y >= targetAlt - 10 then
                     flyPhase = "CRUISE"
                 else
-                    local flatDir = Vector3.new(dirUnit.X, 0, dirUnit.Z).Unit
+                    local flatVec = Vector3.new(dirUnit.X, 0, dirUnit.Z)
+                    local flatDir = (flatVec.Magnitude > 0.01) and flatVec.Unit or Vector3.new(0, 0, 1)
                     local climbSpeed = math.min(Config.FlySpeed * 0.6, (targetAlt - currentPos.Y) * 1.5 + 30)
-                    flyLV.VectorVelocity = flatDir * (climbSpeed * 0.5) + Vector3.new(0, climbSpeed, 0)
+                    flyLV.Velocity = flatDir * (climbSpeed * 0.5) + Vector3.new(0, climbSpeed, 0)
                     if flyBG then
                         flyBG.CFrame = CFrame.lookAt(currentPos, currentPos + flatDir)
                     end
@@ -441,13 +447,13 @@ local function FlyTo(targetPos)
                     local obs = hit.Instance
                     if obs:IsA("BasePart") and obs.Size.Magnitude > 8 then
                         flyPhase = "CLIMB"
-                        FLY_ALTITUDE = currentPos.Y + 200
+                        FLY_ALTITUDE = math.min(currentPos.Y + 200, 1500)
                         task.wait(0.03)
                     end
                 end
 
                 local speed = GetAdaptiveSpeed(dist)
-                flyLV.VectorVelocity = dirUnit * speed
+                flyLV.Velocity = dirUnit * speed
                 if flyBG then
                     flyBG.CFrame = CFrame.lookAt(currentPos, currentPos + dirUnit)
                 end
@@ -461,24 +467,25 @@ local function FlyTo(targetPos)
                 local targetY = groundY + 20
                 local descendSpeed = math.min(Config.FlySpeed * 0.3, (currentPos.Y - targetY) * 0.5 + 20)
 
-                local flatDist = Vector3.new(direction.X, 0, direction.Z).Magnitude
+                local flatVec2 = Vector3.new(direction.X, 0, direction.Z)
+                local flatDist = flatVec2.Magnitude
                 if flatDist > 5 then
-                    local flatDir = Vector3.new(dirUnit.X, 0, dirUnit.Z).Unit
+                    local flatDir = flatVec2.Unit
                     local speed = math.max(GetAdaptiveSpeed(flatDist), 20)
-                    local vy = currentPos.Y > targetY and -descendSpeed or descendSpeed
-                    flyLV.VectorVelocity = flatDir * speed + Vector3.new(0, vy, 0)
+                    local vy = (currentPos.Y > targetY) and -descendSpeed or descendSpeed
+                    flyLV.Velocity = flatDir * speed + Vector3.new(0, vy, 0)
                     if flyBG then
                         flyBG.CFrame = CFrame.lookAt(currentPos, currentPos + flatDir)
                     end
                 else
-                    local vy = currentPos.Y > targetY and -descendSpeed or descendSpeed
+                    local vy = (currentPos.Y > targetY) and -descendSpeed or descendSpeed
                     if math.abs(currentPos.Y - targetY) < 5 then
-                        flyLV.VectorVelocity = Vector3.new(0, -2, 0)
+                        flyLV.Velocity = Vector3.new(0, -2, 0)
                         task.wait(0.1)
                         StopFly()
                         break
                     end
-                    flyLV.VectorVelocity = Vector3.new(0, vy, 0)
+                    flyLV.Velocity = Vector3.new(0, vy, 0)
                 end
                 task.wait(0.03)
             end
@@ -1560,77 +1567,77 @@ end)
 task.spawn(function()
     while true do
         task.wait(0.5)
-        if Config.FruitESP then
+        if not Config.FruitESP then
+            ClearPool(FruitP)
+        else
             local fruits = {}
-        local seen = {}
+            local seen = {}
 
-        -- Scan common fruit containers
-        for _, containerName in ipairs({"_WorldOrigin", "World", "DroppedFruits"}) do
-            local container = Ws:FindFirstChild(containerName)
-            if container then
-                for _, v in pairs(container:GetChildren()) do
-                    if v:IsA("Model") and not seen[v] then
-                        seen[v] = true
-                        local handle = v:FindFirstChild("Handle") or v:FindFirstChildWhichIsA("BasePart")
-                        if handle then
-                            table.insert(fruits, {Model = v, Part = handle, Name = v.Name})
-                        end
-                    end
-                end
-            end
-        end
-
-        -- If nothing found, scan workspace with keywords
-        if #fruits == 0 then
-            local keywords = {"fruit", "apple", "bomb", "chop", "diamond", "door", "dough", "flame", "gravity", "ice",
-                "kilo", "light", "magma", "pain", "quake", "revive", "rubber", "sand", "shadow", "smoke", "spike",
-                "spring", "venom", "dark", "barrier", "blizzard", "buddha", "control", "dragon", "ghost", "human",
-                "leopard", "love", "phoenix", "rumble", "soul", "spirit", "string", "trex", "yeti", "gas", "mammoth", "kitsune"}
-            for _, v in pairs(Ws:GetDescendants()) do
-                if v:IsA("Model") and not seen[v] then
-                    seen[v] = true
-                    local nm = v.Name:lower()
-                    for _, kw in ipairs(keywords) do
-                        if nm:find(kw, 1, true)
-                            and not nm:find("npc")
-                            and not nm:find("boss")
-                            and not nm:find("dealer") then
+            -- Scan common fruit containers
+            for _, containerName in ipairs({"_WorldOrigin", "World", "DroppedFruits"}) do
+                local container = Ws:FindFirstChild(containerName)
+                if container then
+                    for _, v in pairs(container:GetChildren()) do
+                        if v:IsA("Model") and not seen[v] then
+                            seen[v] = true
                             local handle = v:FindFirstChild("Handle") or v:FindFirstChildWhichIsA("BasePart")
                             if handle then
                                 table.insert(fruits, {Model = v, Part = handle, Name = v.Name})
-                                break
                             end
                         end
                     end
                 end
             end
-        end
 
-        -- Track active fruits
-        local active = {}
-        for _, f in ipairs(fruits) do
-            active[f.Model] = true
-            if not FruitP[f.Model] then
-                FruitP[f.Model] = {
-                    Label = NewDrawing("Text", {Text = "🍎 " .. f.Name, Color = Color3.fromRGB(255, 215, 0), Size = 14, Center = true, Outline = true}),
-                    Dist = NewDrawing("Text", {Color = Color3.fromRGB(255, 215, 0), Size = 11, Center = true, Outline = true}),
-                    Part = f.Part,
-                }
+            -- If nothing found, scan workspace with keywords
+            if #fruits == 0 then
+                local keywords = {"fruit","apple","bomb","chop","diamond","door","dough","flame","gravity","ice",
+                    "kilo","light","magma","pain","quake","revive","rubber","sand","shadow","smoke","spike",
+                    "spring","venom","dark","barrier","blizzard","buddha","control","dragon","ghost","human",
+                    "leopard","love","phoenix","rumble","soul","spirit","string","trex","yeti","gas","mammoth","kitsune"}
+                for _, v in pairs(Ws:GetDescendants()) do
+                    if v:IsA("Model") and not seen[v] then
+                        seen[v] = true
+                        local nm = v.Name:lower()
+                        for _, kw in ipairs(keywords) do
+                            if nm:find(kw, 1, true)
+                                and not nm:find("npc")
+                                and not nm:find("boss")
+                                and not nm:find("dealer") then
+                                local handle = v:FindFirstChild("Handle") or v:FindFirstChildWhichIsA("BasePart")
+                                if handle then
+                                    table.insert(fruits, {Model = v, Part = handle, Name = v.Name})
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
             end
-        end
 
-        -- Remove inactive
-        for m, objs in pairs(FruitP) do
-            if not active[m] then
-                objs.Label:Remove()
-                objs.Dist:Remove()
-                FruitP[m] = nil
+            -- Track active fruits
+            local active = {}
+            for _, f in ipairs(fruits) do
+                active[f.Model] = true
+                if not FruitP[f.Model] then
+                    FruitP[f.Model] = {
+                        Label = NewDrawing("Text", {Text = "🍎 " .. f.Name, Color = Color3.fromRGB(255, 215, 0), Size = 14, Center = true, Outline = true}),
+                        Dist  = NewDrawing("Text", {Color = Color3.fromRGB(255, 215, 0), Size = 11, Center = true, Outline = true}),
+                        Part  = f.Part,
+                    }
+                end
             end
-        end
-    else
-        ClearPool(FruitP)
-    end
-    end
+
+            -- Remove inactive
+            for m, objs in pairs(FruitP) do
+                if not active[m] then
+                    objs.Label:Remove()
+                    objs.Dist:Remove()
+                    FruitP[m] = nil
+                end
+            end
+        end -- if FruitESP
+    end -- while
 end)
 
 RS.RenderStepped:Connect(function()
