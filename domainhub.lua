@@ -1,5 +1,5 @@
 --[[
-    🦖 DOMAIN HUB v4 — BLOX FRUIT (Delta)
+    🦖 DOMAIN HUB v5 — BLOX FRUIT (Delta)
     Teleport overhaul: Coordinate DB + Cache + Raycast + Adaptive Fly
 ]]
 
@@ -112,12 +112,13 @@ local function FuzzyMatch(name, pattern)
     if n:find(p, 1, true) or p:find(n, 1, true) then return true end
     -- Word-level match: check if all words in pattern appear in name
     local pWords = {}
-    for w in p:gmatch("%S+") do pWords[w] = true end
+    local pWordCount = 0
+    for w in p:gmatch("%S+") do pWords[w] = true; pWordCount = pWordCount + 1 end
     local matchCount = 0
     for w in pairs(pWords) do
         if n:find(w, 1, true) then matchCount = matchCount + 1 end
     end
-    if matchCount >= (#pWords * 0.5) then return true end
+    if pWordCount > 0 and matchCount >= (pWordCount * 0.5) then return true end
     return false
 end
 
@@ -324,19 +325,35 @@ local function FlyTo(targetPos)
     if not root or not hum then return end
 
     flying = true; flyTarget = targetPos; flyPhase = "CLIMB"
+    FLY_ALTITUDE = 300 -- reset to default each flight
 
-    -- Use LinearVelocity (modern replacement for BodyVelocity)
+    -- LinearVelocity requires an Attachment as parent
+    local att0 = Instance.new("Attachment")
+    att0.Name = "_DH_Att0"; att0.Parent = root
+    local att1 = Instance.new("Attachment")
+    att1.Name = "_DH_Att1"; att1.Parent = root
+
     local lv = Instance.new("LinearVelocity")
     lv.MaxForce = 9e9
     lv.VectorVelocity = Vector3.new(0,0,0)
+    lv.Attachment0 = att0
     lv.Parent = root
     flyBV = lv
 
-    -- BodyGyro to keep upright
-    local bg = Instance.new("BodyGyro")
-    bg.MaxTorque = Vector3.new(9e9,9e9,9e9)
-    bg.CFrame = root.CFrame
-    bg.Parent = root
+    -- AlignOrientation to keep upright (replaces deprecated BodyGyro)
+    local ao = Instance.new("AlignOrientation")
+    ao.MaxTorque = 9e9; ao.Responsiveness = 200
+    ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
+    ao.Attachment0 = att0
+    ao.CFrame = root.CFrame
+    ao.Parent = root
+
+    -- Cleanup helper for constraints
+    local function CleanupConstraints()
+        pcall(function() att0:Destroy() end)
+        pcall(function() att1:Destroy() end)
+        pcall(function() ao:Destroy() end)
+    end
 
     -- Anti-drown/death
     local deathCon
@@ -384,10 +401,11 @@ local function FlyTo(targetPos)
                     climbDone = true
                 else
                     -- Climb while moving toward target (diagonal)
-                    local flatDir = Vector3.new(dir.X, 0, dir.Z).Unit
+                    local flatVec = Vector3.new(dir.X, 0, dir.Z)
+                    local flatDir = flatVec.Magnitude > 0.01 and flatVec.Unit or Vector3.new(0,0,1)
                     local climbSpeed = math.min(Config.FlySpeed * 0.6, (targetAlt - currentPos.Y) * 1.5 + 30)
                     lv.VectorVelocity = flatDir * (climbSpeed * 0.5) + Vector3.new(0, climbSpeed, 0)
-                    bg.CFrame = CFrame.lookAt(currentPos, currentPos + flatDir)
+                    ao.CFrame = CFrame.lookAt(currentPos, currentPos + flatDir)
                     task.wait(0.03)
                     continue
                 end
@@ -410,9 +428,9 @@ local function FlyTo(targetPos)
                     local obstacle = result.Instance
                     -- Check if obstacle is part of an island (large part)
                     if obstacle:IsA("BasePart") and obstacle.Size.Magnitude > 8 then
-                        -- Obstacle ahead! Ascend
+                        -- Obstacle ahead! Ascend (bump local alt, not global)
                         flyPhase = "CLIMB"
-                        FLY_ALTITUDE = currentAlt + 150 -- climb higher
+                        FLY_ALTITUDE = math.min(FLY_ALTITUDE + 150, 1500) -- cap to avoid runaway
                         task.wait(0.03)
                         continue
                     end
@@ -420,7 +438,7 @@ local function FlyTo(targetPos)
 
                 local speed = GetAdaptiveSpeed(dist)
                 lv.VectorVelocity = dir * speed
-                bg.CFrame = CFrame.lookAt(currentPos, currentPos + dir)
+                ao.CFrame = CFrame.lookAt(currentPos, currentPos + dir)
 
                 task.wait(0.03)
                 continue
@@ -436,13 +454,14 @@ local function FlyTo(targetPos)
                 local descentSpeed = math.min(Config.FlySpeed * 0.3, (currentPos.Y - targetY) * 0.5 + 20)
 
                 -- Move toward target while descending
-                local flatDist = Vector3.new(targetVec.X, 0, targetVec.Z).Magnitude
+                local flatVec2 = Vector3.new(targetVec.X, 0, targetVec.Z)
+                local flatDist = flatVec2.Magnitude
                 if flatDist > 5 then
-                    local flatDir = Vector3.new(dir.X, 0, dir.Z).Unit
+                    local flatDir = flatVec2.Unit
                     local speed = math.max(GetAdaptiveSpeed(flatDist), 20)
                     local velY = currentPos.Y > targetY and -descentSpeed or descentSpeed
                     lv.VectorVelocity = flatDir * speed + Vector3.new(0, velY, 0)
-                    bg.CFrame = CFrame.lookAt(currentPos, currentPos + flatDir)
+                    ao.CFrame = CFrame.lookAt(currentPos, currentPos + flatDir)
                 else
                     -- Directly above target, descend straight
                     local velY = currentPos.Y > targetY and -descentSpeed or descentSpeed
@@ -468,7 +487,7 @@ local function FlyTo(targetPos)
 
         -- Cleanup
         StopFly()
-        pcall(function() bg:Destroy() end)
+        CleanupConstraints()
         if deathCon then deathCon:Disconnect() end
     end)
 end
@@ -581,7 +600,7 @@ do
 
     -- ===== TAB: ESP =====
     do
-        P=Instance.new("ScrollingFrame")
+        local P=Instance.new("ScrollingFrame")
         P.Size=UDim2.new(1,0,1,0); P.BackgroundTransparency=1
         P.ScrollBarThickness=4; P.ScrollBarImageColor3=C.ACCENT
         P.CanvasSize=UDim2.new(0,0,0,0); P.Parent=TabContent; ESPPage=P
@@ -880,13 +899,31 @@ do
 
         Sec("🛡️ CACHE INFO")
         do
+            local dbCount = 0; for _ in pairs(COORDS_DB) do dbCount = dbCount + 1 end
             local L=Instance.new("TextLabel")
             L.Size=UDim2.new(1,0,0,36); L.BackgroundColor3=C.SURFACE; L.Parent=P
             Instance.new("UICorner",L).CornerRadius=UDim.new(0,8)
-            local dbCount = 0; for _ in pairs(COORDS_DB) do dbCount = dbCount + 1 end
-            local cacheCount = 0; for _ in pairs(IslandCache) do cacheCount = cacheCount + 1 end
-            L.Text="📀 DB: "..dbCount.." islands\n💾 Cache: "..cacheCount.." scanned"
+            local function RefreshCacheLabel()
+                local cacheCount = 0; for _ in pairs(IslandCache) do cacheCount = cacheCount + 1 end
+                local scanCount = 0; for _ in pairs(ScanCache) do if ScanCache[_] ~= false then scanCount = scanCount + 1 end end
+                L.Text="📀 DB: "..dbCount.." islands  |  💾 Cache: "..cacheCount.."  |  🔍 Scanned: "..scanCount
+            end
+            RefreshCacheLabel()
             L.TextColor3=C.TEXT_DIM; L.TextSize=11; L.Font=Enum.Font.Gotham
+
+            -- Clear cache button
+            local ClearB=Instance.new("TextButton")
+            ClearB.Size=UDim2.new(1,0,0,28); ClearB.BackgroundColor3=Color3.fromRGB(60,30,30)
+            ClearB.Text="🗑 Clear Scan Cache"; ClearB.TextColor3=Color3.fromRGB(255,120,120)
+            ClearB.TextSize=12; ClearB.Font=Enum.Font.GothamBold; ClearB.Parent=P
+            Instance.new("UICorner",ClearB).CornerRadius=UDim.new(0,8)
+            ClearB.MouseButton1Click:Connect(function()
+                for k in pairs(ScanCache) do ScanCache[k]=nil end
+                for k in pairs(IslandCache) do IslandCache[k]=nil end
+                RefreshCacheLabel()
+                ClearB.Text="✅ Cache cleared!"
+                task.delay(2, function() ClearB.Text="🗑 Clear Scan Cache" end)
+            end)
         end
     end
 
@@ -917,7 +954,7 @@ do
     local NS=Instance.new("UIStroke",N); NS.Color=C.ACCENT; NS.Thickness=1
     local NT=Instance.new("TextLabel")
     NT.Size=UDim2.new(1,-20,1,0); NT.Position=UDim2.new(0,10,0,0)
-    NT.BackgroundTransparency=1; NT.Text="🦖 DOMAIN HUB v4 — World "..(CurrentSea or "?")
+    NT.BackgroundTransparency=1; NT.Text="🦖 DOMAIN HUB v5 — World "..(CurrentSea or "?")
     NT.TextColor3=Color3.fromRGB(255,255,255); NT.TextSize=13; NT.Font=Enum.Font.Gotham; NT.Parent=N
     task.delay(3,function()
         TS:Create(N,TweenInfo.new(0.4,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),
@@ -952,12 +989,11 @@ RS.RenderStepped:Connect(function()
             ESPool[p]=nil
         end end
     end
-    for _,s in pairs(ESPool) do
+    for plr,s in pairs(ESPool) do
         if not Config.PlayerESP then
             s.Bx.Visible=false;s.Nm.Visible=false;s.Ds.Visible=false
             s.Hb.Visible=false;s.Hf.Visible=false;s.Tr.Visible=false;continue
         end
-        local plr=nil; for k in pairs(ESPool) do if ESPool[k]==s then plr=k;break end end
         if not plr then continue end
         local c=plr.Character; local r=c and c:FindFirstChild("HumanoidRootPart")
         local h=c and c:FindFirstChild("Humanoid")
@@ -1054,4 +1090,4 @@ RS.RenderStepped:Connect(function()
     end
 end)
 Hub.Destroying:Connect(function() StopFly(); ClearP(ESPool); ClearP(FruitP) end)
-print("🦖 DOMAIN HUB v4 — Loaded! (World "..(CurrentSea or "?")..")")
+print("🦖 DOMAIN HUB v5 — Loaded! (World "..(CurrentSea or "?")..")")
