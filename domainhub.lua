@@ -627,6 +627,3 @@ Hub.Destroying:Connect(function()
     ClearPool(ESPPool)
     ClearPool(FruitPool)
 end)
-
--- ===== NOTIFY =====
-print("🔥 ADIT'S HUB — Loaded! Player ESP + Fruit ESP active.")
