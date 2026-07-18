@@ -1,7 +1,6 @@
 --[[
-    🔥 DOMAIN HUB — BLOX FRUIT (Delta Optimized)
-    Player ESP + Fruit ESP
-    Load with: loadstring(game:HttpGet("raw_url_here"))()
+    🔥 DOMAIN HUB — BLOX FRUIT v2.1 (Delta)
+    Player ESP + Fruit ESP + Fly Teleport + Auto World Detect
 ]]
 
 -- ===== CONFIG =====
@@ -10,11 +9,8 @@ local Config = {
     FruitESP  = true,
     Tracers   = false,
     HealthBar = true,
-    MaxDist   = 5000,
-    BoxColor  = Color3.fromRGB(255, 80, 80),
-    TextColor = Color3.fromRGB(255, 255, 255),
-    FruitCol  = Color3.fromRGB(255, 215, 0),
-    TracerCol = Color3.fromRGB(255, 255, 255),
+    MaxDist   = 999999,
+    FlySpeed  = 250,
 }
 
 -- ===== SERVICES =====
@@ -31,6 +27,11 @@ local Cam       = Ws.CurrentCamera
 local ESPPool   = {}
 local FruitPool = {}
 
+-- ===== FLY STATE =====
+local flying = false
+local flyTarget = nil
+local bv = nil
+
 -- ===== UTILITY =====
 local function NewDrawing(kind, opts)
     local d = Drawing.new(kind)
@@ -44,9 +45,7 @@ local function ClearPool(pool)
     for _, v in pairs(pool) do
         pcall(function() v:Remove() end)
     end
-    for k in pairs(pool) do
-        pool[k] = nil
-    end
+    for k in pairs(pool) do pool[k] = nil end
 end
 
 local function GetDist(pos)
@@ -55,11 +54,209 @@ local function GetDist(pos)
     return math.huge
 end
 
--- ===== INJECTION (Delta safe) =====
+-- =============================================
+-- WORLD / SEA DETECTION
+-- =============================================
+local CurrentSea = nil -- 1, 2, or 3
+
+local function DetectSea()
+    -- Method 1: Check workspace for unique landmarks per sea
+    local landmarks = {
+        [3] = {"GreatTree", "PortTown", "HydraIsland", "Hydra", "CastleOnTheSea", "SeaOfTreats", "Tiki"},
+        [2] = {"KingdomOfRose", "Rose", "UsoppsIsland", "Usopp", "Mansion", "Factory", "IceCastle", "FloatingTurtle"},
+        [1] = {"MarineTown", "MarineStart", "PirateStart", "Jungle", "PirateVillage", "Desert", "FrozenVillage", "MarineFortress"},
+    }
+
+    -- Check 3rd sea first (most distinctive), then 2nd, then 1st
+    for sea = 3, 1, -1 do
+        for _, name in ipairs(landmarks[sea]) do
+            local found = Ws:FindFirstChild(name, true) or
+                         Ws:FindFirstChild(name:lower(), true) or
+                         Ws:FindFirstChild(name:upper(), true)
+            if found then
+                return sea
+            end
+        end
+    end
+
+    -- Method 2: Fallback — check player level in leaderstats
+    pcall(function()
+        local ls = LP:FindFirstChild("leaderstats")
+        if ls then
+            local lvl = ls:FindFirstChild("Level") or ls:FindFirstChild("level")
+            if lvl then
+                local v = lvl.Value
+                if v >= 1500 then
+                    CurrentSea = 3
+                    return
+                elseif v >= 700 then
+                    CurrentSea = 2
+                    return
+                else
+                    CurrentSea = 1
+                    return
+                end
+            end
+        end
+    end)
+
+    -- Method 3: Check player position range
+    local char = LP.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if root then
+        local x, z = root.Position.X, root.Position.Z
+        -- 1st sea usually around origin, 2nd sea offset, 3rd sea different offset
+        if math.abs(x) < 20000 and math.abs(z) < 20000 then
+            return 1
+        end
+    end
+
+    return nil -- unknown
+end
+
+-- =============================================
+-- ISLAND DATABASE (grouped by sea)
+-- =============================================
+local ISLAND_DB = {
+    [1] = { -- 🌊 FIRST SEA (Lv. 1-700)
+        {Name = "🏝 Marine Start",       Tag = "MarineStart"},
+        {Name = "🏝 Pirate Start",       Tag = "PirateStart"},
+        {Name = "🌴 Jungle",             Tag = "Jungle"},
+        {Name = "🏘 Pirate Village",     Tag = "PirateVillage"},
+        {Name = "🏜 Desert",             Tag = "Desert"},
+        {Name = "❄️ Frozen Village",     Tag = "FrozenVillage"},
+        {Name = "🏰 Marine Fortress",    Tag = "MarineFortress"},
+        {Name = "☁️ Sky Island (1st)",   Tag = "Sky1"},
+        {Name = "⛓ Prison",             Tag = "Prison"},
+        {Name = "🏛 Colosseum",          Tag = "Colosseum"},
+        {Name = "🌋 Magma Village",      Tag = "Magma"},
+        {Name = "🌊 Underwater (Fishman)", Tag = "Fishman"},
+        {Name = "☁️ Upper Sky Islands",   Tag = "SkyUpper"},
+    },
+    [2] = { -- 🌊 SECOND SEA (Lv. 700-1500)
+        {Name = "🌹 Kingdom of Rose",    Tag = "KingdomOfRose"},
+        {Name = "🎯 Usopp's Island",     Tag = "UsoppsIsland"},
+        {Name = "🍺 Shank's Room",       Tag = "Shank"},
+        {Name = "🏚 Mansion",            Tag = "Mansion"},
+        {Name = "🏭 Factory",            Tag = "Factory"},
+        {Name = "❄️🔥 Hot & Cold",       Tag = "HotAndCold"},
+        {Name = "⛵️ Cursed Ship",        Tag = "CursedShip"},
+        {Name = "🏰 Ice Castle",         Tag = "IceCastle"},
+        {Name = "🐢 Floating Turtle",    Tag = "FloatingTurtle"},
+        {Name = "🍺 Cafe/Bar",           Tag = "Cafe"},
+    },
+    [3] = { -- 🌊 THIRD SEA (Lv. 1500+)
+        {Name = "🌳 Great Tree",         Tag = "GreatTree"},
+        {Name = "🏯 Castle on Sea",      Tag = "CastleOnTheSea"},
+        {Name = "⚓️ Port Town",         Tag = "PortTown"},
+        {Name = "🐉 Hydra Island",       Tag = "HydraIsland"},
+        {Name = "👻 Haunted Castle",     Tag = "HauntedCastle"},
+        {Name = "🎂 Cake Island",        Tag = "CakeIsland"},
+        {Name = "🥜 Peanut Island",      Tag = "PeanutIsland"},
+        {Name = "🏝 Tiki Island",        Tag = "TikiIsland"},
+        {Name = "🌊 Sea of Treats",      Tag = "SeaOfTreats"},
+    },
+}
+
+-- All islands combined (fallback)
+local ALL_ISLANDS = {}
+for sea = 1, 3 do
+    for _, v in ipairs(ISLAND_DB[sea]) do
+        table.insert(ALL_ISLANDS, v)
+    end
+end
+
+-- ===== FIND ISLAND POSITION IN WORKSPACE =====
+local function FindIslandPos(tag, name)
+    -- Try exact name match as BasePart
+    for _, v in pairs(Ws:GetDescendants()) do
+        if v:IsA("BasePart") and (v.Name == tag or v.Name == name or v.Name:find(tag)) then
+            if v.Size.Magnitude > 10 then
+                return v.Position + Vector3.new(0, v.Size.Y/2 + 10, 0)
+            end
+        end
+    end
+    -- Try model search
+    for _, v in pairs(Ws:GetDescendants()) do
+        if v:IsA("Model") then
+            local mn = v.Name:lower()
+            if mn:find(tag:lower()) or mn:find(name:lower()) then
+                local primary = v:GetPrimaryPartCFrame()
+                if primary then return primary.Position + Vector3.new(0, 50, 0) end
+                local biggest, bigSize = nil, 0
+                for _, p in pairs(v:GetDescendants()) do
+                    if p:IsA("BasePart") and p.Size.Magnitude > bigSize then
+                        biggest, bigSize = p, p.Size.Magnitude
+                    end
+                end
+                if biggest then
+                    return biggest.Position + Vector3.new(0, biggest.Size.Y/2 + 20, 0)
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- ===== FLY TO ISLAND =====
+local function StopFlying()
+    flying = false
+    flyTarget = nil
+    if bv then pcall(function() bv:Destroy() end); bv = nil end
+end
+
+local function FlyToPosition(targetPos)
+    StopFlying()
+    local char = LP.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    local hum  = char:FindFirstChild("Humanoid")
+    if not root or not hum then return end
+
+    flying = true
+    flyTarget = targetPos
+
+    bv = Instance.new("BodyVelocity")
+    bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+    bv.Velocity = Vector3.new(0, 0, 0)
+    bv.P = 2500
+    bv.Parent = root
+
+    local con
+    con = hum.StateChanged:Connect(function(_, new)
+        if new == Enum.HumanoidStateType.FallingDown or new == Enum.HumanoidStateType.Dead then
+            StopFlying()
+            con:Disconnect()
+        end
+    end)
+
+    task.spawn(function()
+        while flying and flyTarget and bv and bv.Parent do
+            local char = LP.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            if not root then StopFlying(); break end
+            local dist = (flyTarget - root.Position).Magnitude
+            if dist < 20 then
+                StopFlying()
+                root.CFrame = CFrame.lookAt(root.Position, flyTarget)
+                break
+            end
+            local dir = (flyTarget - root.Position).Unit
+            local speed = math.min(Config.FlySpeed, dist / 2 + 50)
+            bv.Velocity = dir * speed
+            root.CFrame = CFrame.lookAt(root.Position, root.Position + dir)
+            task.wait(0.03)
+        end
+        StopFlying()
+    end)
+end
+
+-- ===== INJECTION =====
 if CG:FindFirstChild("DomainHub") then
     CG:FindFirstChild("DomainHub"):Destroy()
     ClearPool(ESPPool)
     ClearPool(FruitPool)
+    StopFlying()
 end
 
 local Hub = Instance.new("ScreenGui")
@@ -67,20 +264,21 @@ Hub.Name = "DomainHub"
 Hub.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 Hub.DisplayOrder = 999
 Hub.ResetOnSpawn = false
+if gethui then Hub.Parent = gethui()
+else Hub.Parent = (cloneref and cloneref(CG)) or CG end
 
--- Delta uses gethui(), fallback to CoreGui
-if gethui then
-    Hub.Parent = gethui()
-else
-    Hub.Parent = (cloneref and cloneref(CG)) or CG
-end
+-- =============================================
+-- UI BUILDER
+-- =============================================
+local MainFrame, IconFrame
+local currentSeaView = nil -- which sea tab is selected
 
--- ===== BUILD UI =====
 do
+    -- ===== MAIN FRAME =====
     local F = Instance.new("ImageLabel")
     F.Name = "Main"
-    F.Size = UDim2.new(0, 280, 0, 360)
-    F.Position = UDim2.new(0.5, -140, 0.5, -180)
+    F.Size = UDim2.new(0, 300, 0, 520)
+    F.Position = UDim2.new(0.5, -150, 0.5, -260)
     F.BackgroundColor3 = Color3.fromRGB(12, 12, 22)
     F.BackgroundTransparency = 0.05
     F.Image = "rbxassetid://13160433535"
@@ -90,6 +288,7 @@ do
     F.Active = true
     F.Draggable = true
     F.Parent = Hub
+    MainFrame = F
 
     local UC = Instance.new("UICorner")
     UC.CornerRadius = UDim.new(0, 10)
@@ -105,7 +304,7 @@ do
     H.Size = UDim2.new(1, 0, 0, 40)
     H.BackgroundColor3 = Color3.fromRGB(255, 80, 80)
     H.BackgroundTransparency = 0.15
-    H.Text = "🔥 DOMAIN HUB"
+    H.Text = "🔥 DOMAIN HUB v2"
     H.TextColor3 = Color3.fromRGB(255, 255, 255)
     H.TextSize = 18
     H.Font = Enum.Font.GothamBold
@@ -119,14 +318,14 @@ do
     MinBtn.Size = UDim2.new(0, 28, 0, 28)
     MinBtn.Position = UDim2.new(1, -34, 0, 6)
     MinBtn.BackgroundTransparency = 1
-    MinBtn.Text = "−"
+    MinBtn.Text = "—"
     MinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     MinBtn.TextSize = 22
     MinBtn.Font = Enum.Font.GothamBold
     MinBtn.Parent = F
     MinBtn.MouseButton1Click:Connect(function()
-        F.Visible = not F.Visible
-        MinBtn.Text = F.Visible and "−" or "+"
+        F.Visible = false
+        if IconFrame then IconFrame.Visible = true end
     end)
 
     -- Scroll area
@@ -147,7 +346,7 @@ do
         Content.CanvasSize = UDim2.new(0, 0, 0, Layout.AbsoluteContentSize.Y + 10)
     end)
 
-    -- Section helper
+    -- ===== HELPERS =====
     local function AddSection(text)
         local L = Instance.new("TextLabel")
         L.Size = UDim2.new(1, 0, 0, 24)
@@ -158,10 +357,8 @@ do
         L.Font = Enum.Font.GothamBold
         L.TextXAlignment = Enum.TextXAlignment.Left
         L.Parent = Content
-        return L
     end
 
-    -- Toggle helper
     local function AddToggle(label, key, default)
         Config[key] = default
         local Row = Instance.new("Frame")
@@ -169,9 +366,7 @@ do
         Row.BackgroundColor3 = Color3.fromRGB(25, 25, 40)
         Row.BackgroundTransparency = 0.3
         Row.Parent = Content
-        local RUC = Instance.new("UICorner")
-        RUC.CornerRadius = UDim.new(0, 6)
-        RUC.Parent = Row
+        Instance.new("UICorner", Row).CornerRadius = UDim.new(0, 6)
 
         local Txt = Instance.new("TextLabel")
         Txt.Size = UDim2.new(1, -50, 1, 0)
@@ -189,18 +384,14 @@ do
         Tok.Position = UDim2.new(1, -48, 0, 7)
         Tok.BackgroundColor3 = default and Color3.fromRGB(255, 80, 80) or Color3.fromRGB(60, 60, 70)
         Tok.Parent = Row
-        local TokUC = Instance.new("UICorner")
-        TokUC.CornerRadius = UDim.new(0, 10)
-        TokUC.Parent = Tok
+        Instance.new("UICorner", Tok).CornerRadius = UDim.new(0, 10)
 
         local Knob = Instance.new("Frame")
         Knob.Size = UDim2.new(0, 16, 0, 16)
         Knob.Position = default and UDim2.new(1, -18, 0, 2) or UDim2.new(0, 2, 0, 2)
         Knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
         Knob.Parent = Tok
-        local KUC = Instance.new("UICorner")
-        KUC.CornerRadius = UDim.new(0, 8)
-        KUC.Parent = Knob
+        Instance.new("UICorner", Knob).CornerRadius = UDim.new(0, 8)
 
         local Btn = Instance.new("TextButton")
         Btn.Size = UDim2.new(1, 0, 1, 0)
@@ -222,27 +413,274 @@ do
                 elseif key == "FruitESP" then ClearPool(FruitPool) end
             end
         end)
-
-        return Row
     end
 
-    -- Slider helper
-    local function AddSlider(label, key, min, max, default)
-        Config[key] = default
+    -- ===== SECTIONS =====
+    AddSection("⚔️ PLAYER ESP")
+    AddToggle("Player ESP", "PlayerESP", true)
+    AddToggle("Tracers", "Tracers", false)
+    AddToggle("Health Bar", "HealthBar", true)
+
+    AddSection("🍎 FRUIT ESP")
+    AddToggle("Fruit ESP", "FruitESP", true)
+
+    -- =============================================
+    -- 🌍 TELEPORT — WORLD TABS + ISLAND LIST
+    -- =============================================
+    AddSection("🌍 TELEPORT (FLY)")
+
+    -- Auto-detect current sea
+    CurrentSea = DetectSea()
+    currentSeaView = CurrentSea or 1
+
+    -- Sea indicator
+    local SeaLabel = Instance.new("TextLabel")
+    SeaLabel.Size = UDim2.new(1, 0, 0, 20)
+    SeaLabel.BackgroundTransparency = 1
+    SeaLabel.Text = CurrentSea and ("📍 World " .. CurrentSea .. " detected") or "📍 Auto-detect failed — showing all"
+    SeaLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
+    SeaLabel.TextSize = 11
+    SeaLabel.Font = Enum.Font.Gotham
+    SeaLabel.Parent = Content
+
+    -- Sea tabs row
+    local TabRow = Instance.new("Frame")
+    TabRow.Size = UDim2.new(1, 0, 0, 30)
+    TabRow.BackgroundTransparency = 1
+    TabRow.Parent = Content
+
+    local TabLayout = Instance.new("UIListLayout")
+    TabLayout.FillDirection = Enum.FillDirection.Horizontal
+    TabLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    TabLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    TabLayout.Padding = UDim.new(0, 6)
+    TabLayout.Parent = TabRow
+
+    local seaTabs = {}
+    local function BuildSeaTabs()
+        -- Clear old tabs
+        for _, tb in ipairs(seaTabs) do
+            tb:Destroy()
+        end
+        table.clear(seaTabs)
+
+        local seaNames = {"🗺 All", "🌊 1st Sea", "🌊 2nd Sea", "🌊 3rd Sea"}
+        local seaValues = {0, 1, 2, 3} -- 0 = show all
+
+        for idx, seaVal in ipairs(seaValues) do
+            local Tab = Instance.new("TextButton")
+            Tab.Size = UDim2.new(0, seaVal == 0 and 60 or 80, 0, 28)
+            Tab.BackgroundColor3 = (currentSeaView == seaVal or (currentSeaView == nil and seaVal == 0))
+                and Color3.fromRGB(255, 80, 80)
+                or Color3.fromRGB(30, 30, 50)
+            Tab.Text = seaNames[idx]
+            Tab.TextColor3 = Color3.fromRGB(220, 220, 230)
+            Tab.TextSize = 12
+            Tab.Font = Enum.Font.GothamBold
+            Tab.Parent = TabRow
+            Instance.new("UICorner", Tab).CornerRadius = UDim.new(0, 6)
+            table.insert(seaTabs, Tab)
+
+            Tab.MouseButton1Click:Connect(function()
+                currentSeaView = seaVal
+                -- Refresh tab colors
+                for _, tb in ipairs(seaTabs) do
+                    tb.BackgroundColor3 = Color3.fromRGB(30, 30, 50)
+                end
+                Tab.BackgroundColor3 = Color3.fromRGB(255, 80, 80)
+                -- Rebuild island list
+                BuildIslandList()
+            end)
+        end
+
+        -- Highlight auto-detected
+        for idx, seaVal in ipairs(seaValues) do
+            if currentSeaView == seaVal then
+                seaTabs[idx].BackgroundColor3 = Color3.fromRGB(255, 80, 80)
+            end
+        end
+    end
+
+    -- Island list container
+    local IslandContainer = Instance.new("Frame")
+    IslandContainer.Size = UDim2.new(1, 0, 0, 0)
+    IslandContainer.BackgroundTransparency = 1
+    IslandContainer.ClipsDescendants = true
+    IslandContainer.Parent = Content
+
+    local IslandLayout = Instance.new("UIListLayout")
+    IslandLayout.Padding = UDim.new(0, 3)
+    IslandLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    IslandLayout.Parent = IslandContainer
+
+    local function BuildIslandList()
+        -- Clear existing island buttons
+        for _, child in pairs(IslandContainer:GetChildren()) do
+            if child:IsA("TextButton") then child:Destroy() end
+        end
+
+        -- Determine which islands to show
+        local islands
+        if currentSeaView == 0 or currentSeaView == nil then
+            islands = ALL_ISLANDS
+        else
+            islands = ISLAND_DB[currentSeaView] or {}
+        end
+
+        -- Resize container
+        IslandContainer.Size = UDim2.new(1, 0, 0, #islands * 31 + 4)
+
+        for _, island in ipairs(islands) do
+            local Btn = Instance.new("TextButton")
+            Btn.Size = UDim2.new(1, 0, 0, 28)
+            Btn.BackgroundColor3 = Color3.fromRGB(25, 25, 45)
+            Btn.Text = island.Name
+            Btn.TextColor3 = Color3.fromRGB(200, 200, 220)
+            Btn.TextSize = 12
+            Btn.Font = Enum.Font.Gotham
+            Btn.TextXAlignment = Enum.TextXAlignment.Left
+            Btn.Parent = IslandContainer
+            local Buc = Instance.new("UICorner")
+            Buc.CornerRadius = UDim.new(0, 4)
+            Buc.Parent = Btn
+
+            Btn.MouseEnter:Connect(function()
+                Btn.BackgroundColor3 = Color3.fromRGB(40, 40, 65)
+            end)
+            Btn.MouseLeave:Connect(function()
+                Btn.BackgroundColor3 = Color3.fromRGB(25, 25, 45)
+            end)
+
+            Btn.MouseButton1Click:Connect(function()
+                -- Close dropdown feel
+                DDText.Text = "✈ " .. island.Name .. "..."
+                StatusLabel.Text = "🔍 Locating island..."
+
+                local pos = FindIslandPos(island.Tag, island.Name)
+                if pos then
+                    FlyToPosition(pos)
+                    StopBtn.Visible = true
+                    DDText.Text = "✈ " .. island.Name
+                    StatusLabel.Text = ""
+                else
+                    StatusLabel.Text = "⚠ Island not found in workspace!"
+                    DDText.Text = "🌍 " .. island.Name
+                end
+            end)
+        end
+    end
+
+    -- Dropdown header (shows current selection)
+    local DDText = Instance.new("TextLabel")
+    DDText.Size = UDim2.new(1, 0, 0, 30)
+    DDText.BackgroundColor3 = Color3.fromRGB(30, 30, 50)
+    DDText.Text = "🌍 Select destination..."
+    DDText.TextColor3 = Color3.fromRGB(200, 200, 220)
+    DDText.TextSize = 13
+    DDText.Font = Enum.Font.GothamBold
+    DDText.Parent = Content
+    Instance.new("UICorner", DDText).CornerRadius = UDim.new(0, 6)
+
+    -- Build tabs + initial island list
+    BuildSeaTabs()
+    BuildIslandList()
+
+    -- Status + stop
+    local StatusLabel = Instance.new("TextLabel")
+    StatusLabel.Size = UDim2.new(1, 0, 0, 18)
+    StatusLabel.BackgroundTransparency = 1
+    StatusLabel.Text = ""
+    StatusLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
+    StatusLabel.TextSize = 11
+    StatusLabel.Font = Enum.Font.Gotham
+    StatusLabel.Parent = Content
+
+    local StopBtn = Instance.new("TextButton")
+    StopBtn.Size = UDim2.new(1, 0, 0, 28)
+    StopBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    StopBtn.Text = "⏹ STOP FLYING"
+    StopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    StopBtn.TextSize = 12
+    StopBtn.Font = Enum.Font.GothamBold
+    StopBtn.Parent = Content
+    Instance.new("UICorner", StopBtn).CornerRadius = UDim.new(0, 6)
+    StopBtn.Visible = false
+    StopBtn.MouseButton1Click:Connect(function()
+        StopFlying()
+        StopBtn.Visible = false
+        DDText.Text = "🌍 Select destination..."
+        StatusLabel.Text = ""
+    end)
+
+    -- Speed control
+    local SpeedRow = Instance.new("Frame")
+    SpeedRow.Size = UDim2.new(1, 0, 0, 28)
+    SpeedRow.BackgroundTransparency = 1
+    SpeedRow.Parent = Content
+
+    local SpeedTxt = Instance.new("TextLabel")
+    SpeedTxt.Size = UDim2.new(0.5, -4, 1, 0)
+    SpeedTxt.BackgroundTransparency = 1
+    SpeedTxt.Text = "✈️ Fly Speed:"
+    SpeedTxt.TextColor3 = Color3.fromRGB(200, 200, 220)
+    SpeedTxt.TextSize = 13
+    SpeedTxt.Font = Enum.Font.Gotham
+    SpeedTxt.TextXAlignment = Enum.TextXAlignment.Left
+    SpeedTxt.Parent = SpeedRow
+
+    local SpeedVal = Instance.new("TextBox")
+    SpeedVal.Size = UDim2.new(0.5, -4, 1, 0)
+    SpeedVal.Position = UDim2.new(0.5, 4, 0, 0)
+    SpeedVal.BackgroundColor3 = Color3.fromRGB(30, 30, 50)
+    SpeedVal.Text = tostring(Config.FlySpeed)
+    SpeedVal.TextColor3 = Color3.fromRGB(255, 255, 255)
+    SpeedVal.TextSize = 13
+    SpeedVal.Font = Enum.Font.GothamBold
+    SpeedVal.TextXAlignment = Enum.TextXAlignment.Center
+    SpeedVal.Parent = SpeedRow
+    Instance.new("UICorner", SpeedVal).CornerRadius = UDim.new(0, 6)
+    SpeedVal.FocusLost:Connect(function()
+        local n = tonumber(SpeedVal.Text)
+        Config.FlySpeed = n and math.clamp(n, 50, 2000) or 250
+        SpeedVal.Text = tostring(Config.FlySpeed)
+    end)
+
+    -- Flying status updater
+    task.spawn(function()
+        while task.wait(0.2) do
+            if flying and flyTarget then
+                local char = LP.Character
+                local root = char and char:FindFirstChild("HumanoidRootPart")
+                if root then
+                    local dist = (flyTarget - root.Position).Magnitude
+                    StatusLabel.Text = "✈ Flying... " .. math.floor(dist) .. " m left"
+                end
+            elseif not flying and StopBtn.Visible then
+                StopBtn.Visible = false
+                StopFlying()
+                DDText.Text = "🌍 Select destination..."
+                StatusLabel.Text = ""
+            end
+        end
+    end)
+
+    -- =============================================
+    -- ⚙️ SETTINGS
+    -- =============================================
+    AddSection("⚙️ SETTINGS")
+    do
         local Row = Instance.new("Frame")
         Row.Size = UDim2.new(1, 0, 0, 34)
         Row.BackgroundColor3 = Color3.fromRGB(25, 25, 40)
         Row.BackgroundTransparency = 0.3
         Row.Parent = Content
-        local RUC = Instance.new("UICorner")
-        RUC.CornerRadius = UDim.new(0, 6)
-        RUC.Parent = Row
+        Instance.new("UICorner", Row).CornerRadius = UDim.new(0, 6)
 
         local Txt = Instance.new("TextLabel")
         Txt.Size = UDim2.new(1, -50, 0, 16)
         Txt.Position = UDim2.new(0, 10, 0, 2)
         Txt.BackgroundTransparency = 1
-        Txt.Text = label
+        Txt.Text = "Max Distance"
         Txt.TextColor3 = Color3.fromRGB(220, 220, 230)
         Txt.TextSize = 12
         Txt.Font = Enum.Font.Gotham
@@ -253,7 +691,7 @@ do
         Val.Size = UDim2.new(1, -50, 0, 14)
         Val.Position = UDim2.new(0, 10, 0, 18)
         Val.BackgroundTransparency = 1
-        Val.Text = tostring(default)
+        Val.Text = "∞"
         Val.TextColor3 = Color3.fromRGB(255, 120, 120)
         Val.TextSize = 11
         Val.Font = Enum.Font.Gotham
@@ -261,36 +699,29 @@ do
         Val.Parent = Row
 
         local SliderBg = Instance.new("Frame")
-        SliderBg.Size = UDim2.new(0, 80, 0, 4)
-        SliderBg.Position = UDim2.new(1, -92, 0, 15)
+        SliderBg.Size = UDim2.new(0, 130, 0, 4)
+        SliderBg.Position = UDim2.new(1, -142, 0, 15)
         SliderBg.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
         SliderBg.Parent = Row
-        local SBUC = Instance.new("UICorner")
-        SBUC.CornerRadius = UDim.new(0, 2)
-        SBUC.Parent = SliderBg
+        Instance.new("UICorner", SliderBg).CornerRadius = UDim.new(0, 2)
 
         local SliderFill = Instance.new("Frame")
-        SliderFill.Size = UDim2.new((default-min)/(max-min), 0, 1, 0)
+        SliderFill.Size = UDim2.new(0.95, 0, 1, 0)
         SliderFill.BackgroundColor3 = Color3.fromRGB(255, 80, 80)
         SliderFill.Parent = SliderBg
-        local SFUC = Instance.new("UICorner")
-        SFUC.CornerRadius = UDim.new(0, 2)
-        SFUC.Parent = SliderFill
+        Instance.new("UICorner", SliderFill).CornerRadius = UDim.new(0, 2)
 
-        local SliderBtn = Instance.new("TextButton")
-        SliderBtn.Size = UDim2.new(1, 0, 1, 0)
-        SliderBtn.BackgroundTransparency = 1
-        SliderBtn.Text = ""
-        SliderBtn.Parent = Row
+        local sBtn = Instance.new("TextButton")
+        sBtn.Size = UDim2.new(1, 0, 1, 0)
+        sBtn.BackgroundTransparency = 1
+        sBtn.Text = ""
+        sBtn.Parent = Row
 
+        local smin, smax = 50000, 1000000
         local dragging = false
-        SliderBtn.MouseButton1Down:Connect(function()
-            dragging = true
-        end)
+        sBtn.MouseButton1Down:Connect(function() dragging = true end)
         UIS.InputEnded:Connect(function(io)
-            if io.UserInputType == Enum.UserInputType.MouseButton1 then
-                dragging = false
-            end
+            if io.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
         end)
         UIS.InputChanged:Connect(function(io)
             if io.UserInputType == Enum.UserInputType.MouseMovement and dragging then
@@ -298,38 +729,69 @@ do
                 local absPos = SliderBg.AbsolutePosition
                 local absSize = SliderBg.AbsoluteSize
                 local relX = math.clamp((mx - absPos.X) / absSize.X, 0, 1)
-                local val = math.floor(min + (max - min) * relX)
-                Config[key] = val
-                Val.Text = tostring(val)
+                local val = math.floor(smin + (smax - smin) * relX)
+                Config.MaxDist = val
+                Val.Text = val >= 1000000 and "∞" or tostring(val)
                 SliderFill.Size = UDim2.new(relX, 0, 1, 0)
             end
         end)
     end
-
-    -- === BUILD SECTIONS ===
-    AddSection("⚔️ PLAYER ESP")
-    AddToggle("Player ESP", "PlayerESP", true)
-    AddToggle("Tracers", "Tracers", false)
-    AddToggle("Health Bar", "HealthBar", true)
-
-    AddSection("🍎 FRUIT ESP")
-    AddToggle("Fruit ESP", "FruitESP", true)
-
-    AddSection("⚙️ SETTINGS")
-    AddSlider("Max Distance", "MaxDist", 1000, 10000, 5000)
 end
 
--- ===== NOTIFICATION =====
+-- =============================================
+-- ICON BUTTON (minimized)
+-- =============================================
+do
+    local I = Instance.new("TextButton")
+    I.Name = "Icon"
+    I.Size = UDim2.new(0, 48, 0, 48)
+    I.Position = UDim2.new(0, 20, 0.5, -24)
+    I.BackgroundColor3 = Color3.fromRGB(255, 80, 80)
+    I.Text = "🔥"
+    I.TextSize = 22
+    I.Font = Enum.Font.GothamBold
+    I.TextColor3 = Color3.fromRGB(255, 255, 255)
+    I.Active = true
+    I.Draggable = true
+    I.Visible = false
+    I.Parent = Hub
+    IconFrame = I
+
+    Instance.new("UICorner", I).CornerRadius = UDim.new(0, 12)
+
+    local ISt = Instance.new("UIStroke")
+    ISt.Color = Color3.fromRGB(200, 60, 60)
+    ISt.Thickness = 2
+    ISt.Parent = I
+
+    -- Glow
+    local Glow = Instance.new("ImageLabel")
+    Glow.Size = UDim2.new(1.5, 0, 1.5, 0)
+    Glow.Position = UDim2.new(-0.25, 0, -0.25, 0)
+    Glow.BackgroundTransparency = 1
+    Glow.Image = "rbxassetid://13160433535"
+    Glow.ImageColor3 = Color3.fromRGB(255, 80, 80)
+    Glow.ImageTransparency = 0.7
+    Glow.Parent = I
+    Glow.ZIndex = -1
+
+    I.MouseButton1Click:Connect(function()
+        I.Visible = false
+        if MainFrame then MainFrame.Visible = true end
+    end)
+end
+
+-- =============================================
+-- NOTIFICATION
+-- =============================================
 do
     local N = Instance.new("Frame")
-    N.Size = UDim2.new(0, 260, 0, 38)
-    N.Position = UDim2.new(0.5, -130, 0, 20)
+    N.Size = UDim2.new(0, 300, 0, 38)
+    N.Position = UDim2.new(0.5, -150, 0, 20)
     N.BackgroundColor3 = Color3.fromRGB(12, 12, 22)
     N.BackgroundTransparency = 0.1
     N.Parent = Hub
-    local NUC = Instance.new("UICorner")
-    NUC.CornerRadius = UDim.new(0, 8)
-    NUC.Parent = N
+    Instance.new("UICorner", N).CornerRadius = UDim.new(0, 8)
     local NS = Instance.new("UIStroke")
     NS.Color = Color3.fromRGB(255, 80, 80)
     NS.Thickness = 1
@@ -338,7 +800,8 @@ do
     NT.Size = UDim2.new(1, -20, 1, 0)
     NT.Position = UDim2.new(0, 10, 0, 0)
     NT.BackgroundTransparency = 1
-    NT.Text = "🔥 DOMAIN HUB loaded!"
+    local seaName = CurrentSea and ("World " .. CurrentSea) or "unknown world"
+    NT.Text = "🔥 DOMAIN HUB — " .. seaName
     NT.TextColor3 = Color3.fromRGB(255, 255, 255)
     NT.TextSize = 13
     NT.Font = Enum.Font.Gotham
@@ -346,163 +809,127 @@ do
     task.delay(3.5, function()
         TS:Create(N, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
             {BackgroundTransparency = 1}):Play()
-        task.delay(0.5, NT.Destroy, NT)
         task.delay(0.5, N.Destroy, N)
     end)
 end
 
--- ===== PLAYER ESP LOOP =====
+-- =============================================
+-- PLAYER ESP LOOP
+-- =============================================
 local tick = 0
 local plrList = {}
 
 RS.RenderStepped:Connect(function()
-    -- Refresh player list every 30 frames (1s at 60fps)
     tick = tick + 1
-    if tick >= 30 then
-        tick = 0
-        plrList = Players:GetPlayers()
-    end
+    if tick >= 30 then tick = 0; plrList = Players:GetPlayers() end
 
     if Config.PlayerESP then
-        -- Create/mark active players
         local active = {}
         for _, plr in pairs(plrList) do
             if plr ~= LP then
                 active[plr] = true
                 if not ESPPool[plr] then
-                    local set = {
-                        Box       = NewDrawing("Square", {Thickness = 1, Color = Config.BoxColor, Filled = false}),
-                        NameTag   = NewDrawing("Text",  {Color = Config.TextColor, Size = 14, Center = true, Outline = true}),
-                        DistTag   = NewDrawing("Text",  {Color = Color3.fromRGB(200, 200, 200), Size = 11, Center = true, Outline = true}),
-                        HpBg      = NewDrawing("Square", {Color = Color3.fromRGB(40, 40, 40), Filled = true}),
-                        HpFill    = NewDrawing("Square", {Color = Color3.fromRGB(0, 200, 80), Filled = true}),
-                        Tracer    = NewDrawing("Line",   {Color = Config.TracerCol, Thickness = 1}),
-                        Plr       = plr,
+                    ESPPool[plr] = {
+                        Box     = NewDrawing("Square", {Thickness = 1, Color = Config.BoxColor, Filled = false}),
+                        NameTag = NewDrawing("Text",  {Color = Config.TextColor, Size = 14, Center = true, Outline = true}),
+                        DistTag = NewDrawing("Text",  {Color = Color3.fromRGB(200, 200, 200), Size = 11, Center = true, Outline = true}),
+                        HpBg    = NewDrawing("Square", {Color = Color3.fromRGB(40, 40, 40), Filled = true}),
+                        HpFill  = NewDrawing("Square", {Color = Color3.fromRGB(0, 200, 80), Filled = true}),
+                        Tracer  = NewDrawing("Line",   {Color = Config.TracerCol, Thickness = 1}),
                     }
-                    ESPPool[plr] = set
                 end
             end
         end
-        -- Remove stale players
         for plr, set in pairs(ESPPool) do
             if not active[plr] then
-                set.Box:Remove()
-                set.NameTag:Remove()
-                set.DistTag:Remove()
-                set.HpBg:Remove()
-                set.HpFill:Remove()
-                set.Tracer:Remove()
+                set.Box:Remove(); set.NameTag:Remove(); set.DistTag:Remove()
+                set.HpBg:Remove(); set.HpFill:Remove(); set.Tracer:Remove()
                 ESPPool[plr] = nil
             end
         end
     end
 
-    -- Update ESP positions
     for plr, set in pairs(ESPPool) do
         if not Config.PlayerESP then
-            set.Box.Visible = false
-            set.NameTag.Visible = false
-            set.DistTag.Visible = false
-            set.HpBg.Visible = false
-            set.HpFill.Visible = false
-            set.Tracer.Visible = false
+            set.Box.Visible = false; set.NameTag.Visible = false
+            set.DistTag.Visible = false; set.HpBg.Visible = false
+            set.HpFill.Visible = false; set.Tracer.Visible = false
             continue
         end
-
         local char = plr.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
         local hum  = char and char:FindFirstChild("Humanoid")
         if root and hum and hum.Health > 0 then
             local dist = GetDist(root.Position)
             if dist <= Config.MaxDist then
-                local pos   = root.Position
-                local sp    = Cam:WorldToViewportPoint(pos)
-                local spH   = Cam:WorldToViewportPoint(pos + Vector3.new(0, 4.5, 0))
-                local spF   = Cam:WorldToViewportPoint(pos - Vector3.new(0, 2.5, 0))
+                local sp  = Cam:WorldToViewportPoint(root.Position)
+                local spH = Cam:WorldToViewportPoint(root.Position + Vector3.new(0, 4.5, 0))
+                local spF = Cam:WorldToViewportPoint(root.Position - Vector3.new(0, 2.5, 0))
+                local h = math.abs(spH.Y - spF.Y)
+                local w = h * 0.7
+                local x = sp.X - w / 2
+                local y = spH.Y
 
-                local h    = math.abs(spH.Y - spF.Y)
-                local w    = h * 0.7
-                local x    = sp.X - w / 2
-                local y    = spH.Y
-
-                -- Box
                 set.Box.Visible = true
-                set.Box.Size     = Vector2.new(w, h)
+                set.Box.Size = Vector2.new(w, h)
                 set.Box.Position = Vector2.new(x, y)
-                set.Box.Color    = Config.BoxColor
+                set.Box.Color = Config.BoxColor
 
-                -- Name
-                set.NameTag.Visible  = true
+                set.NameTag.Visible = true
                 set.NameTag.Position = Vector2.new(sp.X, spH.Y - 18)
-                set.NameTag.Text     = plr.Name
-                set.NameTag.Color    = Config.TextColor
+                set.NameTag.Text = plr.Name
+                set.NameTag.Color = Config.TextColor
 
-                -- Distance
                 local dCol = dist < 500 and Color3.fromRGB(0, 255, 100)
-                         or dist < 2000 and Color3.fromRGB(255, 200, 50)
+                         or dist < 50000 and Color3.fromRGB(255, 200, 50)
                          or Color3.fromRGB(255, 80, 80)
-                set.DistTag.Visible  = true
+                set.DistTag.Visible = true
                 set.DistTag.Position = Vector2.new(sp.X, spF.Y + 4)
-                set.DistTag.Text     = math.floor(dist) .. " m"
-                set.DistTag.Color    = dCol
+                set.DistTag.Text = dist >= 1000000 and "∞" or math.floor(dist) .. " m"
+                set.DistTag.Color = dCol
 
-                -- Health bar
                 if Config.HealthBar then
-                    local hp    = hum.Health / hum.MaxHealth
-                    local hpCol = Color3.fromRGB(
-                        math.floor(255 * (1 - hp)),
-                        math.floor(255 * hp),
-                        50
-                    )
-                    set.HpBg.Visible   = true
-                    set.HpBg.Size      = Vector2.new(w + 4, 3)
-                    set.HpBg.Position  = Vector2.new(x - 2, y - 5)
+                    local hp = hum.Health / hum.MaxHealth
+                    set.HpBg.Visible = true
+                    set.HpBg.Size = Vector2.new(w + 4, 3)
+                    set.HpBg.Position = Vector2.new(x - 2, y - 5)
                     set.HpFill.Visible = true
-                    set.HpFill.Size    = Vector2.new((w + 4) * hp, 3)
+                    set.HpFill.Size = Vector2.new((w + 4) * hp, 3)
                     set.HpFill.Position = Vector2.new(x - 2, y - 5)
-                    set.HpFill.Color   = hpCol
+                    set.HpFill.Color = Color3.fromRGB(
+                        math.floor(255 * (1 - hp)),
+                        math.floor(255 * hp), 50
+                    )
                 else
-                    set.HpBg.Visible   = false
-                    set.HpFill.Visible = false
+                    set.HpBg.Visible = false; set.HpFill.Visible = false
                 end
 
-                -- Tracer
                 set.Tracer.Visible = Config.Tracers
                 if Config.Tracers then
                     set.Tracer.From = Vector2.new(Cam.ViewportSize.X / 2, Cam.ViewportSize.Y)
-                    set.Tracer.To   = Vector2.new(sp.X, sp.Y)
+                    set.Tracer.To = Vector2.new(sp.X, sp.Y)
                 end
             else
-                set.Box.Visible = false
-                set.NameTag.Visible = false
-                set.DistTag.Visible = false
-                set.HpBg.Visible = false
-                set.HpFill.Visible = false
-                set.Tracer.Visible = false
+                set.Box.Visible = false; set.NameTag.Visible = false
+                set.DistTag.Visible = false; set.HpBg.Visible = false
+                set.HpFill.Visible = false; set.Tracer.Visible = false
             end
         else
-            set.Box.Visible = false
-            set.NameTag.Visible = false
-            set.DistTag.Visible = false
-            set.HpBg.Visible = false
-            set.HpFill.Visible = false
-            set.Tracer.Visible = false
+            set.Box.Visible = false; set.NameTag.Visible = false
+            set.DistTag.Visible = false; set.HpBg.Visible = false
+            set.HpFill.Visible = false; set.Tracer.Visible = false
         end
     end
 end)
 
--- ===== FRUIT ESP (async scan + per-frame render) =====
+-- =============================================
+-- FRUIT ESP
+-- =============================================
 task.spawn(function()
     while task.wait(0.5) do
-        if not Config.FruitESP then
-            ClearPool(FruitPool)
-            continue
-        end
-
+        if not Config.FruitESP then ClearPool(FruitPool); continue end
         local fruits = {}
         local checked = {}
-
-        -- Method 1: Common containers
         for _, name in ipairs({"_WorldOrigin", "World", "DroppedFruits"}) do
             local c = Ws:FindFirstChild(name)
             if c then
@@ -510,116 +937,67 @@ task.spawn(function()
                     if v:IsA("Model") and not checked[v] then
                         checked[v] = true
                         local handle = v:FindFirstChild("Handle") or v:FindFirstChildWhichIsA("BasePart")
-                        if handle then
-                            table.insert(fruits, {Model = v, Part = handle, Name = v.Name})
-                        end
+                        if handle then table.insert(fruits, {Model = v, Part = handle, Name = v.Name}) end
                     end
                 end
             end
         end
-
-        -- Method 2: Scan entire workspace for fruit-pattern models
-        local fruitKeywords = {
-            "fruit", "apple", "bomb", "chop", "diamond", "door", "dough",
-            "flame", "gravity", "ice", "kilo", "light", "magma", "pain",
-            "quake", "revive", "rubber", "sand", "shadow", "smoke", "spike",
-            "spring", "venom", "dark", "barrier", "blizzard", "buddha", "budha",
-            "control", "dragon", "ghost", "human", "leopard", "love",
-            "phoenix", "rumble", "soul", "spirit", "string", "trex", "t-rex",
-            "yeti", "gas", "mammoth", "kitsune", "falcon", "spider"
-        }
-
         if #fruits == 0 then
+            local kws = {"fruit","apple","bomb","chop","diamond","door","dough","flame","gravity","ice","kilo","light","magma","pain","quake","revive","rubber","sand","shadow","smoke","spike","spring","venom","dark","barrier","blizzard","buddha","control","dragon","ghost","human","leopard","love","phoenix","rumble","soul","spirit","string","trex","yeti","gas","mammoth","kitsune"}
             for _, v in pairs(Ws:GetDescendants()) do
                 if v:IsA("Model") and not checked[v] then
                     checked[v] = true
                     local name = v.Name:lower()
-                    for _, kw in ipairs(fruitKeywords) do
+                    for _, kw in ipairs(kws) do
                         if name:find(kw, 1, true) and not name:find("npc") and not name:find("boss") then
                             local handle = v:FindFirstChild("Handle") or v:FindFirstChildWhichIsA("BasePart")
-                            if handle then
-                                table.insert(fruits, {Model = v, Part = handle, Name = v.Name})
-                                break
-                            end
+                            if handle then table.insert(fruits, {Model = v, Part = handle, Name = v.Name}); break end
                         end
                     end
                 end
             end
         end
-
-        -- Sync active set
         local active = {}
         for _, f in pairs(fruits) do
-            local key = f.Model
-            active[key] = true
-            if not FruitPool[key] then
-                FruitPool[key] = {
-                    Label = NewDrawing("Text", {
-                        Text    = "🍎 " .. f.Name,
-                        Color   = Config.FruitCol,
-                        Size    = 14,
-                        Center  = true,
-                        Outline = true,
-                    }),
-                    Dist  = NewDrawing("Text", {
-                        Color   = Color3.fromRGB(255, 215, 0),
-                        Size    = 11,
-                        Center  = true,
-                        Outline = true,
-                    }),
+            active[f.Model] = true
+            if not FruitPool[f.Model] then
+                FruitPool[f.Model] = {
+                    Label = NewDrawing("Text", {Text = "🍎 " .. f.Name, Color = Config.FruitCol, Size = 14, Center = true, Outline = true}),
+                    Dist  = NewDrawing("Text", {Color = Color3.fromRGB(255, 215, 0), Size = 11, Center = true, Outline = true}),
                     Part  = f.Part,
                 }
             end
         end
         for key, set in pairs(FruitPool) do
-            if not active[key] then
-                set.Label:Remove()
-                set.Dist:Remove()
-                FruitPool[key] = nil
-            end
+            if not active[key] then set.Label:Remove(); set.Dist:Remove(); FruitPool[key] = nil end
         end
     end
 end)
 
--- Smooth fruit label positioning
 RS.RenderStepped:Connect(function()
     local show = Config.FruitESP
     for _, set in pairs(FruitPool) do
-        if not show then
-            set.Label.Visible = false
-            set.Dist.Visible = false
-            continue
-        end
+        if not show then set.Label.Visible = false; set.Dist.Visible = false; continue end
         local p = set.Part
         if p and p.Parent then
             local sp = Cam:WorldToViewportPoint(p.Position)
             if sp.Z > 0 then
                 local dist = GetDist(p.Position)
                 if dist <= Config.MaxDist then
-                    set.Label.Visible  = true
-                    set.Label.Position = Vector2.new(sp.X, sp.Y - 26)
-                    set.Dist.Visible   = true
-                    set.Dist.Position  = Vector2.new(sp.X, sp.Y - 10)
-                    set.Dist.Text      = math.floor(dist) .. " m"
-                else
-                    set.Label.Visible = false
-                    set.Dist.Visible  = false
-                end
-            else
-                set.Label.Visible = false
-                set.Dist.Visible  = false
-            end
-        else
-            set.Label.Visible = false
-            set.Dist.Visible  = false
-        end
+                    set.Label.Visible = true; set.Label.Position = Vector2.new(sp.X, sp.Y - 26)
+                    set.Dist.Visible = true; set.Dist.Position = Vector2.new(sp.X, sp.Y - 10)
+                    set.Dist.Text = dist >= 1000000 and "∞" or math.floor(dist) .. " m"
+                else set.Label.Visible = false; set.Dist.Visible = false end
+            else set.Label.Visible = false; set.Dist.Visible = false end
+        else set.Label.Visible = false; set.Dist.Visible = false end
     end
 end)
 
 -- ===== CLEANUP =====
 Hub.Destroying:Connect(function()
+    StopFlying()
     ClearPool(ESPPool)
     ClearPool(FruitPool)
 end)
 
-print("🔥 DOMAIN HUB — Loaded for Delta!")
+print("🔥 DOMAIN HUB v2.1 — Loaded! (World " .. (CurrentSea or "?") .. ")")
