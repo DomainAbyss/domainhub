@@ -1,12 +1,9 @@
 --[[
-    🦖 DOMAIN HUB v5 — BLOX FRUIT (Delta)
-    All features rewritten cleanly with:
-    - Working close/minimize buttons
-    - Reliable world detection (level-based)
-    - ESP that actually renders
-    - Teleport with Coordinate DB + fallback
-    - Auto Random Fruit Gacha
+    🦖 DOMAIN HUB v5.1 — BLOX FRUIT (Delta-safe)
+    Fixed: no 'continue' keyword, no 'math.clamp', pcall-wrapped
 ]]
+
+local OK, ERR = pcall(function()
 
 -- ===== CONFIG =====
 local Config = {
@@ -997,7 +994,7 @@ do
     speedInputCorner.Parent = speedInput
     speedInput.FocusLost:Connect(function()
         local n = tonumber(speedInput.Text)
-        Config.FlySpeed = n and math.clamp(n, 50, 2000) or 250
+        Config.FlySpeed = n and math.max(50, math.min(2000, n)) or 250
         speedInput.Text = tostring(Config.FlySpeed)
     end)
 
@@ -1274,7 +1271,7 @@ do
             local mx = UIS:GetMouseLocation().X
             local ax = sliderBg.AbsolutePosition.X
             local aw = sliderBg.AbsoluteSize.X
-            local ratio = math.clamp((mx - ax) / aw, 0, 1)
+            local ratio = math.max(0, math.min(1, (mx - ax) / aw))
             Config.MaxDist = math.floor(smin + (smax - smin) * ratio)
             distVal.Text = (Config.MaxDist >= 1000000 and "∞" or tostring(Config.MaxDist))
             sliderFill.Size = UDim2.new(ratio, 0, 1, 0)
@@ -1318,7 +1315,7 @@ do
     speedInput2Corner.Parent = speedInput2
     speedInput2.FocusLost:Connect(function()
         local n = tonumber(speedInput2.Text)
-        Config.FlySpeed = n and math.clamp(n, 50, 2000) or 250
+        Config.FlySpeed = n and math.max(50, math.min(2000, n)) or 250
         speedInput2.Text = tostring(Config.FlySpeed)
     end)
 
@@ -1482,84 +1479,77 @@ RS.RenderStepped:Connect(function()
 
     -- Update ESP positions
     for plr, objs in pairs(ESPool) do
-        if not Config.PlayerESP then
-            objs.Box.Visible = false
-            objs.Name.Visible = false
-            objs.Dist.Visible = false
-            objs.HpBg.Visible = false
-            objs.HpFill.Visible = false
-            objs.Tracer.Visible = false
-            continue
-        end
-
-        local char = plr.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        local hum = char and char:FindFirstChild("Humanoid")
-        if not root or not hum or hum.Health <= 0 then
-            objs.Box.Visible = false
-            objs.Name.Visible = false
-            objs.Dist.Visible = false
-            objs.HpBg.Visible = false
-            objs.HpFill.Visible = false
-            objs.Tracer.Visible = false
-            continue
-        end
-
-        local dist = GetDistance(root.Position)
-        if dist > Config.MaxDist then
-            objs.Box.Visible = false
-            objs.Name.Visible = false
-            objs.Dist.Visible = false
-            objs.HpBg.Visible = false
-            objs.HpFill.Visible = false
-            objs.Tracer.Visible = false
-            continue
-        end
-
-        local sp = Cam:WorldToViewportPoint(root.Position)
-        local spH = Cam:WorldToViewportPoint(root.Position + Vector3.new(0, 4.5, 0))
-        local spF = Cam:WorldToViewportPoint(root.Position - Vector3.new(0, 2.5, 0))
-        local height = math.abs(spH.Y - spF.Y)
-        local width = height * 0.7
-        local x = sp.X - width / 2
-        local y = spH.Y
-
-        objs.Box.Visible = true
-        objs.Box.Size = Vector2.new(width, height)
-        objs.Box.Position = Vector2.new(x, y)
-        objs.Box.Color = C.ACCENT
-
-        objs.Name.Visible = true
-        objs.Name.Position = Vector2.new(sp.X, spH.Y - 18)
-        objs.Name.Text = plr.Name
-
-        local distColor = (dist < 500 and Color3.fromRGB(0, 255, 100))
-            or (dist < 50000 and Color3.fromRGB(255, 200, 50))
-            or C.RED
-        objs.Dist.Visible = true
-        objs.Dist.Position = Vector2.new(sp.X, spF.Y + 4)
-        objs.Dist.Text = (dist >= 1000000 and "∞" or math.floor(dist) .. " m")
-        objs.Dist.Color = distColor
-
-        if Config.HealthBar then
-            local hp = hum.Health / hum.MaxHealth
-            objs.HpBg.Visible = true
-            objs.HpBg.Size = Vector2.new(width + 4, 3)
-            objs.HpBg.Position = Vector2.new(x - 2, y - 5)
-
-            objs.HpFill.Visible = true
-            objs.HpFill.Size = Vector2.new((width + 4) * hp, 3)
-            objs.HpFill.Position = Vector2.new(x - 2, y - 5)
-            objs.HpFill.Color = Color3.fromRGB(255 * (1 - hp), 255 * hp, 50)
+        if Config.PlayerESP then
+            local char = plr.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChild("Humanoid")
+            if root and hum and hum.Health > 0 then
+                local dist = GetDistance(root.Position)
+                if dist <= Config.MaxDist then
+                    -- SHOW ESP
+                    local sp = Cam:WorldToViewportPoint(root.Position)
+                    local spH = Cam:WorldToViewportPoint(root.Position + Vector3.new(0, 4.5, 0))
+                    local spF = Cam:WorldToViewportPoint(root.Position - Vector3.new(0, 2.5, 0))
+                    local height = math.abs(spH.Y - spF.Y)
+                    local width = height * 0.7
+                    local x = sp.X - width / 2
+                    local y = spH.Y
+                    objs.Box.Visible = true
+                    objs.Box.Size = Vector2.new(width, height)
+                    objs.Box.Position = Vector2.new(x, y)
+                    objs.Box.Color = C.ACCENT
+                    objs.Name.Visible = true
+                    objs.Name.Position = Vector2.new(sp.X, spH.Y - 18)
+                    objs.Name.Text = plr.Name
+                    local distColor = (dist < 500 and Color3.fromRGB(0, 255, 100)) or (dist < 50000 and Color3.fromRGB(255, 200, 50)) or C.RED
+                    objs.Dist.Visible = true
+                    objs.Dist.Position = Vector2.new(sp.X, spF.Y + 4)
+                    objs.Dist.Text = (dist >= 1000000 and "∞" or math.floor(dist) .. " m")
+                    objs.Dist.Color = distColor
+                    if Config.HealthBar then
+                        local hp = hum.Health / hum.MaxHealth
+                        objs.HpBg.Visible = true
+                        objs.HpBg.Size = Vector2.new(width + 4, 3)
+                        objs.HpBg.Position = Vector2.new(x - 2, y - 5)
+                        objs.HpFill.Visible = true
+                        objs.HpFill.Size = Vector2.new((width + 4) * hp, 3)
+                        objs.HpFill.Position = Vector2.new(x - 2, y - 5)
+                        objs.HpFill.Color = Color3.fromRGB(255 * (1 - hp), 255 * hp, 50)
+                    else
+                        objs.HpBg.Visible = false
+                        objs.HpFill.Visible = false
+                    end
+                    objs.Tracer.Visible = Config.Tracers
+                    if Config.Tracers then
+                        objs.Tracer.From = Vector2.new(Cam.ViewportSize.X / 2, Cam.ViewportSize.Y)
+                        objs.Tracer.To = Vector2.new(sp.X, sp.Y)
+                    end
+                else
+                    -- Hide: beyond max distance
+                    objs.Box.Visible = false
+                    objs.Name.Visible = false
+                    objs.Dist.Visible = false
+                    objs.HpBg.Visible = false
+                    objs.HpFill.Visible = false
+                    objs.Tracer.Visible = false
+                end
+            else
+                -- Hide: no character or dead
+                objs.Box.Visible = false
+                objs.Name.Visible = false
+                objs.Dist.Visible = false
+                objs.HpBg.Visible = false
+                objs.HpFill.Visible = false
+                objs.Tracer.Visible = false
+            end
         else
+            -- Hide: ESP feature disabled
+            objs.Box.Visible = false
+            objs.Name.Visible = false
+            objs.Dist.Visible = false
             objs.HpBg.Visible = false
             objs.HpFill.Visible = false
-        end
-
-        objs.Tracer.Visible = Config.Tracers
-        if Config.Tracers then
-            objs.Tracer.From = Vector2.new(Cam.ViewportSize.X / 2, Cam.ViewportSize.Y)
-            objs.Tracer.To = Vector2.new(sp.X, sp.Y)
+            objs.Tracer.Visible = false
         end
     end
 end)
@@ -1570,12 +1560,8 @@ end)
 task.spawn(function()
     while true do
         task.wait(0.5)
-        if not Config.FruitESP then
-            ClearPool(FruitP)
-            continue
-        end
-
-        local fruits = {}
+        if Config.FruitESP then
+            local fruits = {}
         local seen = {}
 
         -- Scan common fruit containers
@@ -1641,28 +1627,31 @@ task.spawn(function()
                 FruitP[m] = nil
             end
         end
+    else
+        ClearPool(FruitP)
+    end
     end
 end)
 
 RS.RenderStepped:Connect(function()
     local enabled = Config.FruitESP
     for _, objs in pairs(FruitP) do
-        if not enabled then
-            objs.Label.Visible = false
-            objs.Dist.Visible = false
-            continue
-        end
-        local p = objs.Part
-        if p and p.Parent then
-            local sp = Cam:WorldToViewportPoint(p.Position)
-            if sp.Z > 0 then
-                local d = GetDistance(p.Position)
-                if d <= Config.MaxDist then
-                    objs.Label.Visible = true
-                    objs.Label.Position = Vector2.new(sp.X, sp.Y - 26)
-                    objs.Dist.Visible = true
-                    objs.Dist.Position = Vector2.new(sp.X, sp.Y - 10)
-                    objs.Dist.Text = (d >= 1000000 and "∞" or math.floor(d) .. " m")
+        if enabled then
+            local p = objs.Part
+            if p and p.Parent then
+                local sp = Cam:WorldToViewportPoint(p.Position)
+                if sp.Z > 0 then
+                    local d = GetDistance(p.Position)
+                    if d <= Config.MaxDist then
+                        objs.Label.Visible = true
+                        objs.Label.Position = Vector2.new(sp.X, sp.Y - 26)
+                        objs.Dist.Visible = true
+                        objs.Dist.Position = Vector2.new(sp.X, sp.Y - 10)
+                        objs.Dist.Text = (d >= 1000000 and "∞" or math.floor(d) .. " m")
+                    else
+                        objs.Label.Visible = false
+                        objs.Dist.Visible = false
+                    end
                 else
                     objs.Label.Visible = false
                     objs.Dist.Visible = false
@@ -1687,4 +1676,11 @@ Hub.Destroying:Connect(function()
     ClearPool(FruitP)
 end)
 
-print("🦖 DOMAIN HUB v5 — Loaded! (World " .. (CurrentSea or "?") .. ")")
+print("🦖 DOMAIN HUB v5.1 — Loaded! (World " .. (CurrentSea or "?") .. ")")
+
+end) -- end pcall
+
+if not OK then
+    warn("🦖 DOMAIN HUB ERROR: " .. tostring(ERR))
+    print("🦖 DOMAIN HUB ERROR: " .. tostring(ERR))
+end
