@@ -490,10 +490,10 @@ else Hub.Parent = (cloneref and cloneref(CG)) or CG end
 -- UI COLORS
 -- =============================================
 local C = {
-    BG=Color3.fromRGB(10,10,18); ACCENT=Color3.fromRGB(0,200,80)
-    ACCENT2=Color3.fromRGB(0,160,60); SURFACE=Color3.fromRGB(18,20,22)
-    TEXT=Color3.fromRGB(220,220,230); TEXT_DIM=Color3.fromRGB(140,140,150)
-    RED=Color3.fromRGB(220,60,60); TAB_INACTIVE=Color3.fromRGB(20,25,22)
+    BG=Color3.fromRGB(10,10,18), ACCENT=Color3.fromRGB(0,200,80),
+    ACCENT2=Color3.fromRGB(0,160,60), SURFACE=Color3.fromRGB(18,20,22),
+    TEXT=Color3.fromRGB(220,220,230), TEXT_DIM=Color3.fromRGB(140,140,150),
+    RED=Color3.fromRGB(220,60,60), TAB_INACTIVE=Color3.fromRGB(20,25,22),
 }
 
 -- =============================================
@@ -752,7 +752,7 @@ do
                         FlyTo(pos)
                         StopB.Visible=true
                         DestLabel.Text="✈ "..is.N
-                        StatusL.Text="✅ Flying ("..sourceNames[source] or source..")"
+                        StatusL.Text="✅ Flying ("..(sourceNames[source] or source)..")"
                     else
                         -- Abort — no island found anywhere
                         StatusL.Text="❌ Island not found in DB/Cache/Workspace"
@@ -883,7 +883,9 @@ do
             local L=Instance.new("TextLabel")
             L.Size=UDim2.new(1,0,0,36); L.BackgroundColor3=C.SURFACE; L.Parent=P
             Instance.new("UICorner",L).CornerRadius=UDim.new(0,8)
-            L.Text="📀 DB: "..#COORDS_DB.." islands\n💾 Cache: "..#IslandCache.." scanned"
+            local dbCount = 0; for _ in pairs(COORDS_DB) do dbCount = dbCount + 1 end
+            local cacheCount = 0; for _ in pairs(IslandCache) do cacheCount = cacheCount + 1 end
+            L.Text="📀 DB: "..dbCount.." islands\n💾 Cache: "..cacheCount.." scanned"
             L.TextColor3=C.TEXT_DIM; L.TextSize=11; L.Font=Enum.Font.Gotham
         end
     end
